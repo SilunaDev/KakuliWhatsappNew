@@ -296,6 +296,7 @@ async function startSock() {
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
+ 
   const client = makeWASocket({
     version,
     auth: {
