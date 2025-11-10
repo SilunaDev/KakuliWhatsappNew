@@ -3,6 +3,8 @@ import {
   makeWASocket,
   DisconnectReason,
   downloadContentFromMessage,
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
 } from "@whiskeysockets/baileys";
 
 import fs from "fs";
@@ -74,24 +76,24 @@ async function createVideoSticker(videoBuffer) {
     const targetDuration = Math.min(duration, 10);
 
     await new Promise((resolve, reject) => {
-  ffmpeg(inputPath)
-    .inputOptions([`-t ${targetDuration}`])
-    .outputOptions([
-      "-vcodec libwebp",
-      // Scale so smaller side fits 512, crop to 512x512
-      "-vf scale=512:512:force_original_aspect_ratio=increase,crop=512:512,fps=15",
-      "-loop 0",
-      "-preset default",
-      "-an",
-      "-lossless 1",
-      "-compression_level 6"
-    ])
-    .on("start", cmd => console.log("Processing video:", cmd))
-    .on("progress", progress => console.log("Progress:", progress.timemark))
-    .on("error", reject)
-    .on("end", resolve)
-    .save(outputPath);
-});
+      ffmpeg(inputPath)
+        .inputOptions([`-t ${targetDuration}`])
+        .outputOptions([
+          "-vcodec libwebp",
+          // Scale so smaller side fits 512, crop to 512x512
+          "-vf scale=512:512:force_original_aspect_ratio=increase,crop=512:512,fps=15",
+          "-loop 0",
+          "-preset default",
+          "-an",
+          "-lossless 1",
+          "-compression_level 6"
+        ])
+        .on("start", cmd => console.log("Processing video:", cmd))
+        .on("progress", progress => console.log("Progress:", progress.timemark))
+        .on("error", reject)
+        .on("end", resolve)
+        .save(outputPath);
+    });
 
 
     return fs.readFileSync(outputPath);
@@ -289,25 +291,60 @@ async function handleYTSearchCommand(client, msg, args) {
 
 // 🟢 MAIN SOCKET FUNCTION
 async function startSock() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+  
+  const { state, saveCreds } = await useMultiFileAuthState("auth_info_multi");
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
   const client = makeWASocket({
-    auth: state,
+    version,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, console),
+    },
+    printQRInTerminal: true,
     browser: ["Ubuntu", "Chrome", "22.04.4"],
+    defaultQueryTimeoutMs: undefined,
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 10000,
+    emitOwnEvents: true,
+    fireInitQueries: true,
+    generateHighQualityLinkPreview: true,
+    syncFullHistory: false,
+    markOnlineOnConnect: true,
   });
 
   client.ev.on("creds.update", saveCreds);
 
-  client.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+  client.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    
     if (qr) {
+      console.clear();
+      console.log("\n📱 ╔════════════════════════════════════╗");
+      console.log("   ║  SCAN THIS QR CODE WITH WHATSAPP  ║");
+      console.log("   ╚════════════════════════════════════╝\n");
       qrcode.generate(qr, { small: true });
+      console.log("\n✅ Waiting for WhatsApp to connect...\n");
     }
 
     if (connection === "close") {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) startSock();
+      console.log("Connection closed:", lastDisconnect?.error?.output?.statusCode, "| Reconnecting:", shouldReconnect);
+      
+      if (shouldReconnect) {
+        console.log("Reconnecting in 3 seconds...");
+        setTimeout(() => startSock(), 3000);
+      } else {
+        console.log("Logged out. Delete auth_info_multi folder to re-authenticate.");
+      }
     } else if (connection === "open") {
-      console.log("✅ Connected to WhatsApp!");
+      console.clear();
+      console.log("✅ ══════════════════════════════════");
+      console.log("✅   CONNECTED TO WHATSAPP!");
+      console.log("✅ ══════════════════════════════════\n");
+    } else if (connection === "connecting") {
+      console.log("⏳ Connecting to WhatsApp...");
     }
   });
 
